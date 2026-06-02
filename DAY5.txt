@@ -1,0 +1,1841 @@
+﻿Branch Redirection :
+  
+
+The branch outcome becomes available in the Execute stage (@3). At that point, the processor redirects the PC to the target address if the branch is taken. Any instructions that entered the pipeline during the delay are invalidated and prevented from writing results. This mechanism allows the processor to support branching correctly while keeping the pipeline running continuously and minimizing performance loss.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Branch Pipeline Example :
+  
+
+In the example, the processor executes a loop containing add, addi, and blt instructions. The blt instruction compares two registers and decides whether to jump back to the loop. When the branch is taken, the instructions that were fetched after the branch are incorrect and are therefore flushed from the pipeline. The PC is redirected to the loop address, and execution restarts from the beginning of the loop. This process ensures that only the correct instructions continue through the pipeline while maintaining efficient execution.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Lab: Branches :
+  
+
+This lab explains how branch instructions are handled in a pipelined RISC-V processor. The processor checks whether a branch should be taken during the Execute stage. Since the branch decision is known only after a few pipeline stages, some instructions that were fetched after the branch may already be in the pipeline. If the branch is taken, those incorrect instructions are marked invalid and removed. The $valid signal is moved to stage @3 so that it can determine whether any valid branch was taken in the previous two instructions. The Program Counter (PC) is incremented every clock cycle to keep the pipeline full, while branch redirection continues to occur after three cycles when a branch is detected.
+
+
+
+
+
+
+
+
+PROGRAM CODE :
+\m4_TLV_version 1d: tl-x.org
+\SV
+   // This code can be found in: https://github.com/stevehoover/RISC-V_MYTH_Workshop
+   
+   m4_include_lib(['https://raw.githubusercontent.com/BalaDhinesh/RISC-V_MYTH_Workshop/master/tlv_lib/risc-v_shell_lib.tlv'])
+
+
+\SV
+   m4_makerchip_module   // (Expanded in Nav-TLV pane.)
+\TLV
+
+
+   // /====================\
+   // | Sum 1 to 9 Program |
+   // \====================/
+   //
+   // Program for MYTH Workshop to test RV32I
+   // Add 1,2,3,...,9 (in that order).
+   //
+   // Regs:
+   //  r10 (a0): In: 0, Out: final sum
+   //  r12 (a2): 10
+   //  r13 (a3): 1..10
+   //  r14 (a4): Sum
+   // 
+   // External to function:
+   m4_asm(ADD, r10, r0, r0)             // Initialize r10 (a0) to 0.
+   // Function:
+   m4_asm(ADD, r14, r10, r0)            // Initialize sum register a4 with 0x0
+   m4_asm(ADDI, r12, r10, 1010)         // Store count of 10 in register a2.
+   m4_asm(ADD, r13, r10, r0)            // Initialize intermediate sum register a3 with 0
+   // Loop:
+   m4_asm(ADD, r14, r13, r14)           // Incremental addition
+   m4_asm(ADDI, r13, r13, 1)            // Increment intermediate register by 1
+   m4_asm(BLT, r13, r12, 1111111111000) // If a3 is less than a2, branch to label named <loop>
+   m4_asm(ADD, r10, r14, r0)            // Store final result to register a0 so that it can be read by main program
+   
+   // Optional:
+   // m4_asm(JAL, r7, 00000000000000000000) // Done. Jump to itself (infinite loop). (Up to 20-bit signed immediate plus implicit 0 bit (unlike JALR) provides byte address; last immediate bit should also be 0)
+   m4_define_hier(['M4_IMEM'], M4_NUM_INSTRS)
+   
+   |cpu
+      @0
+         $reset = *reset;
+         $inc_pc[31:0] = $pc[31:0] + 32'd4;
+         $pc[31:0] = >>1$reset ? 32'b0 : >>3$valid_taken_br ? >>3$br_tgt_pc : >>1$inc_pc[31:0];
+         $imem_rd_en = !$reset;
+         $imem_rd_addr[M4_IMEM_INDEX_CNT-1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
+      @1
+         $instr[31:0] = $imem_rd_data[31:0];
+         $is_i_instr = $instr[6:2] ==? 5'b0000x || 
+                       $instr[6:2] ==? 5'b001x0 || 
+                       $instr[6:2] ==? 5'b11001;
+         $is_r_instr = $instr[6:2] ==? 5'b01011 || 
+                       $instr[6:2] ==? 5'b011x0 || 
+                       $instr[6:2] ==? 5'b10100;
+         $is_s_instr = $instr[6:2] ==? 5'b0100x;
+         $is_b_instr = $instr[6:2] ==? 5'b11000;
+         $is_j_instr = $instr[6:2] ==? 5'b11011;
+         $is_u_instr = $instr[6:2] ==? 5'b0x101;
+         $imm[31:0] = $is_i_instr ? {{21{$instr[31]}}, $instr[30:20]} :
+                      $is_s_instr ? {{21{$instr[31]}}, $instr[30:25], $instr[11:7]} :
+                      $is_b_instr ? {{20{$instr[31]}}, $instr[7], $instr[30:25], $instr[11:8], 1'b0} :
+                      $is_u_instr ? {$instr[31:12], 12'b0} :
+                      $is_j_instr ? {{12{$instr[31]}}, $instr[19:12], $instr[20], $instr[30:21], 1'b0} :
+                                    32'b0;
+         
+         $funct7_valid = $is_r_instr;
+         ?$funct7_valid
+            $funct7[6:0] = $instr[31:25];
+         $funct3_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         ?$funct3_valid
+            $funct3[2:0] = $instr[14:12];
+         $rs1_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs1_valid
+            $rs1[4:0] = $instr[19:15];
+         $rs2_valid = $is_r_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs2_valid
+            $rs2[4:0] = $instr[24:20];
+         $rd_valid = $is_r_instr || $is_i_instr || $is_u_instr || $is_j_instr;
+         ?$rd_valid
+            $rd[4:0] = $instr[11:7];
+         $opcode_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr || $is_u_instr || $is_j_instr;
+         ?$opcode_valid
+            $opcode[6:0] = $instr[6:0];
+            
+         $dec_bits[10:0] = {$funct7[5], $funct3, $opcode};
+         $is_beq = $dec_bits ==? 11'bx_000_1100011;
+         $is_bne = $dec_bits ==? 11'bx_001_1100011;
+         $is_blt = $dec_bits ==? 11'bx_100_1100011;
+         $is_bge = $dec_bits ==? 11'bx_101_1100011;
+         $is_bltu = $dec_bits ==? 11'bx_110_1100011;
+         $is_bgeu = $dec_bits ==? 11'bx_111_1100011;
+         $is_addi = $dec_bits ==? 11'bx_000_0010011;
+         $is_add = $dec_bits ==? 11'b0_000_0110011;
+         
+      @2
+         
+         $br_tgt_pc[31:0] = $pc[31:0] + $imm[31:0];
+         $src1_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs1)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs1)) ? >>2$result[31:0] :
+                             $rf_rd_data1[31:0];
+         
+         $src2_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs2)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs2)) ? >>2$result[31:0] :
+                             $rf_rd_data2[31:0];
+         $rf_rd_en1 = $rs1_valid;
+         $rf_rd_index1[4:0] = $rs1[4:0];
+         $rf_rd_en2 = $rs2_valid;
+         $rf_rd_index2[4:0] = $rs2[4:0];
+      @3
+         $taken_br = $is_beq ? ($src1_value == $src2_value) :
+                     $is_bne ? ($src1_value != $src2_value) :
+                     $is_blt ? (($src1_value < $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bge ? (($src1_value >= $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bltu ? ($src1_value < $src2_value) :
+                     $is_bgeu ? ($src1_value >= $src2_value) :
+                     1'b0;
+         $valid_taken_br = $valid && $taken_br;
+         $valid = !(>>1$valid_taken_br || >>2$valid_taken_br);
+         $result[31:0] = $is_addi ? $src1_value[31:0] + $imm[31:0] :
+                         $is_add ? $src1_value[31:0] + $src2_value[31:0] :
+                         32'bx;
+         $rf_wr_en = $valid && $rd_valid && ($rd != 5'b0);
+         $rf_wr_index[4:0] = $rd[4:0];
+         $rf_wr_data[31:0] = $result[31:0];
+         *passed = |cpu/xreg[10]>>5$value == (1+2+3+4+5+6+7+8+9);
+         
+   `BOGUS_USE($is_beq $is_bne $is_blt $is_bge $is_bltu $is_bgeu $is_addi $is_add);
+
+
+      // Note: Because of the magic we are using for visualisation, if visualisation is enabled below,
+      //       be sure to avoid having unassigned signals (which you might be using for random inputs)
+      //       other than those specifically expected in the labs. You'll get strange errors for these.
+
+
+   
+   // Assert these to end simulation (before Makerchip cycle limit).
+   //*passed = *cyc_cnt > 40;
+   *failed = 1'b0;
+   
+   // Macro instantiations for:
+   //  o instruction memory
+   //  o register file
+   //  o data memory
+   //  o CPU visualization
+   |cpu
+      m4+imem(@1)    // Args: (read stage)
+      m4+rf(@2, @3)  // Args: (read stage, write stage) - if equal, no register bypass is required
+      //m4+dmem(@4)    // Args: (read/write stage)
+
+
+   m4+cpu_viz(@4)    // For visualisation, argument should be at least equal to the last stage of CPU logic. @4 would work for all labs.
+\SV
+   endmodule
+
+
+OUTPUT : 
+  
+
+
+
+VERIFY LINK : 
+https://myth.makerchip.com/v140/ide/~0L9fPhGx/p-0BghVx
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Lab: Complete Instruction Decode :
+  
+
+In this lab, the instruction decode stage is completed by adding support for the remaining RV32I instructions, except the load instructions. The decoder checks the instruction's opcode, funct3, and funct7 fields to identify which operation needs to be performed. Control signals such as BEQ, BNE, BLT, BGE, ADD, and ADDI are generated based on these fields. For load instructions, a single load signal is created using only the opcode because all load operations are handled in a similar way. This decode logic helps the processor correctly understand and execute each instruction.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+PROGRAM CODE :
+\m4_TLV_version 1d: tl-x.org
+\SV
+   // This code can be found in: https://github.com/stevehoover/RISC-V_MYTH_Workshop
+   
+   m4_include_lib(['https://raw.githubusercontent.com/BalaDhinesh/RISC-V_MYTH_Workshop/master/tlv_lib/risc-v_shell_lib.tlv'])
+
+
+\SV
+   m4_makerchip_module   // (Expanded in Nav-TLV pane.)
+\TLV
+
+
+   // /====================\
+   // | Sum 1 to 9 Program |
+   // \====================/
+   //
+   // Program for MYTH Workshop to test RV32I
+   // Add 1,2,3,...,9 (in that order).
+   //
+   // Regs:
+   //  r10 (a0): In: 0, Out: final sum
+   //  r12 (a2): 10
+   //  r13 (a3): 1..10
+   //  r14 (a4): Sum
+   // 
+   // External to function:
+   m4_asm(ADD, r10, r0, r0)             // Initialize r10 (a0) to 0.
+   // Function:
+   m4_asm(ADD, r14, r10, r0)            // Initialize sum register a4 with 0x0
+   m4_asm(ADDI, r12, r10, 1010)         // Store count of 10 in register a2.
+   m4_asm(ADD, r13, r10, r0)            // Initialize intermediate sum register a3 with 0
+   // Loop:
+   m4_asm(ADD, r14, r13, r14)           // Incremental addition
+   m4_asm(ADDI, r13, r13, 1)            // Increment intermediate register by 1
+   m4_asm(BLT, r13, r12, 1111111111000) // If a3 is less than a2, branch to label named <loop>
+   m4_asm(ADD, r10, r14, r0)            // Store final result to register a0 so that it can be read by main program
+   
+   // Optional:
+   // m4_asm(JAL, r7, 00000000000000000000) // Done. Jump to itself (infinite loop). (Up to 20-bit signed immediate plus implicit 0 bit (unlike JALR) provides byte address; last immediate bit should also be 0)
+   m4_define_hier(['M4_IMEM'], M4_NUM_INSTRS)
+   
+   |cpu
+      @0
+         $reset = *reset;
+         $inc_pc[31:0] = $pc[31:0] + 32'd4;
+         $pc[31:0] = >>1$reset ? 32'b0 : >>3$valid_taken_br ? >>3$br_tgt_pc : >>1$inc_pc[31:0];
+         $imem_rd_en = !$reset;
+         $imem_rd_addr[M4_IMEM_INDEX_CNT-1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
+      @1
+         $instr[31:0] = $imem_rd_data[31:0];
+         $is_i_instr = $instr[6:2] ==? 5'b0000x || 
+                       $instr[6:2] ==? 5'b001x0 || 
+                       $instr[6:2] ==? 5'b11001;
+         $is_r_instr = $instr[6:2] ==? 5'b01011 || 
+                       $instr[6:2] ==? 5'b011x0 || 
+                       $instr[6:2] ==? 5'b10100;
+         $is_s_instr = $instr[6:2] ==? 5'b0100x;
+         $is_b_instr = $instr[6:2] ==? 5'b11000;
+         $is_j_instr = $instr[6:2] ==? 5'b11011;
+         $is_u_instr = $instr[6:2] ==? 5'b0x101;
+         $imm[31:0] = $is_i_instr ? {{21{$instr[31]}}, $instr[30:20]} :
+                      $is_s_instr ? {{21{$instr[31]}}, $instr[30:25], $instr[11:7]} :
+                      $is_b_instr ? {{20{$instr[31]}}, $instr[7], $instr[30:25], $instr[11:8], 1'b0} :
+                      $is_u_instr ? {$instr[31:12], 12'b0} :
+                      $is_j_instr ? {{12{$instr[31]}}, $instr[19:12], $instr[20], $instr[30:21], 1'b0} :
+                                    32'b0;
+         
+         $funct7_valid = $is_r_instr;
+         ?$funct7_valid
+            $funct7[6:0] = $instr[31:25];
+         $funct3_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         ?$funct3_valid
+            $funct3[2:0] = $instr[14:12];
+         $rs1_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs1_valid
+            $rs1[4:0] = $instr[19:15];
+         $rs2_valid = $is_r_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs2_valid
+            $rs2[4:0] = $instr[24:20];
+         $rd_valid = $is_r_instr || $is_i_instr || $is_u_instr || $is_j_instr;
+         ?$rd_valid
+            $rd[4:0] = $instr[11:7];
+         $opcode_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr || $is_u_instr || $is_j_instr;
+         ?$opcode_valid
+            $opcode[6:0] = $instr[6:0];
+            
+         $dec_bits[10:0] = {$funct7[5], $funct3, $opcode};
+         $is_beq   = $dec_bits ==? 11'bx_000_1100011;
+         $is_bne   = $dec_bits ==? 11'bx_001_1100011;
+         $is_blt   = $dec_bits ==? 11'bx_100_1100011;
+         $is_bge   = $dec_bits ==? 11'bx_101_1100011;
+         $is_bltu  = $dec_bits ==? 11'bx_110_1100011;
+         $is_bgeu  = $dec_bits ==? 11'bx_111_1100011;
+         $is_lui   = $dec_bits ==? 11'bx_xxx_0110111;
+         $is_auipc = $dec_bits ==? 11'bx_xxx_0010111;
+         $is_jal   = $dec_bits ==? 11'bx_xxx_1101111;
+         $is_jalr  = $dec_bits ==? 11'bx_000_1100111;
+         $is_load  = $dec_bits ==? 11'bx_xxx_0000011;
+         $is_sb    = $dec_bits ==? 11'bx_000_0100011;
+         $is_sh    = $dec_bits ==? 11'bx_001_0100011;
+         $is_sw    = $dec_bits ==? 11'bx_010_0100011;
+         $is_addi  = $dec_bits ==? 11'bx_000_0010011;
+         $is_slti  = $dec_bits ==? 11'bx_010_0010011;
+         $is_sltiu = $dec_bits ==? 11'bx_011_0010011;
+         $is_xori  = $dec_bits ==? 11'bx_100_0010011;
+         $is_ori   = $dec_bits ==? 11'bx_110_0010011;
+         $is_andi  = $dec_bits ==? 11'bx_111_0010011;
+         $is_slli  = $dec_bits ==? 11'b0_001_0010011;
+         $is_srli  = $dec_bits ==? 11'b0_101_0010011;
+         $is_srai  = $dec_bits ==? 11'b1_101_0010011;
+         $is_add   = $dec_bits ==? 11'b0_000_0110011;
+         $is_sub   = $dec_bits ==? 11'b1_000_0110011;
+         $is_sll   = $dec_bits ==? 11'b0_001_0110011;
+         $is_slt   = $dec_bits ==? 11'b0_010_0110011;
+         $is_sltu  = $dec_bits ==? 11'b0_011_0110011;
+         $is_xor   = $dec_bits ==? 11'b0_100_0110011;
+         $is_srl   = $dec_bits ==? 11'b0_101_0110011;
+         $is_sra   = $dec_bits ==? 11'b1_101_0110011;
+         $is_or    = $dec_bits ==? 11'b0_110_0110011;
+         $is_and   = $dec_bits ==? 11'b0_111_0110011;
+         
+      @2
+         
+         $br_tgt_pc[31:0] = $pc[31:0] + $imm[31:0];
+         $src1_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs1)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs1)) ? >>2$result[31:0] :
+                             $rf_rd_data1[31:0];
+         
+         $src2_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs2)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs2)) ? >>2$result[31:0] :
+                             $rf_rd_data2[31:0];
+         $rf_rd_en1 = $rs1_valid;
+         $rf_rd_index1[4:0] = $rs1[4:0];
+         $rf_rd_en2 = $rs2_valid;
+         $rf_rd_index2[4:0] = $rs2[4:0];
+      @3
+         $taken_br = $is_beq ? ($src1_value == $src2_value) :
+                     $is_bne ? ($src1_value != $src2_value) :
+                     $is_blt ? (($src1_value < $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bge ? (($src1_value >= $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bltu ? ($src1_value < $src2_value) :
+                     $is_bgeu ? ($src1_value >= $src2_value) :
+                     1'b0;
+         $valid_taken_br = $valid && $taken_br;
+         $valid = !(>>1$valid_taken_br || >>2$valid_taken_br);
+         $result[31:0] = $is_addi ? $src1_value[31:0] + $imm[31:0] :
+                         $is_add ? $src1_value[31:0] + $src2_value[31:0] :
+                         32'bx;
+         $rf_wr_en = $valid && $rd_valid && ($rd != 5'b0);
+         $rf_wr_index[4:0] = $rd[4:0];
+         $rf_wr_data[31:0] = $result[31:0];
+         *passed = |cpu/xreg[10]>>5$value == (1+2+3+4+5+6+7+8+9);
+         
+   `BOGUS_USE($is_beq $is_bne $is_blt $is_bge $is_bltu $is_bgeu $is_addi $is_add);
+
+
+      // Note: Because of the magic we are using for visualisation, if visualisation is enabled below,
+      //       be sure to avoid having unassigned signals (which you might be using for random inputs)
+      //       other than those specifically expected in the labs. You'll get strange errors for these.
+
+
+   
+   // Assert these to end simulation (before Makerchip cycle limit).
+   //*passed = *cyc_cnt > 40;
+   *failed = 1'b0;
+   
+   // Macro instantiations for:
+   //  o instruction memory
+   //  o register file
+   //  o data memory
+   //  o CPU visualization
+   |cpu
+      m4+imem(@1)    // Args: (read stage)
+      m4+rf(@2, @3)  // Args: (read stage, write stage) - if equal, no register bypass is required
+      //m4+dmem(@4)    // Args: (read/write stage)
+
+
+   m4+cpu_viz(@4)    // For visualisation, argument should be at least equal to the last stage of CPU logic. @4 would work for all labs.
+\SV
+   endmodule
+
+
+
+
+
+
+OUTPUT : 
+  
+
+
+
+VERIFY LINK : 
+https://myth.makerchip.com/v140/ide/~0L9fPhGx/p-0DRhBN
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Lab: Complete ALU :
+  
+
+In this lab, the Arithmetic Logic Unit (ALU) is completed by implementing the remaining arithmetic, logical, shift, and comparison operations. The ALU performs operations such as ADD, SUB, AND, OR, XOR, shift left, shift right, and set-less-than using values from source registers or immediate values. It also supports instructions like LUI, AUIPC, JAL, and JALR by generating the required results. Intermediate result signals are used for some comparison operations to simplify the design. Completing the ALU allows the processor to execute the full set of RV32I arithmetic and logic instructions correctly.
+
+
+
+
+
+
+
+
+
+
+
+
+PROGRAM CODE :
+\m4_TLV_version 1d: tl-x.org
+\SV
+   // This code can be found in: https://github.com/stevehoover/RISC-V_MYTH_Workshop
+   
+   m4_include_lib(['https://raw.githubusercontent.com/BalaDhinesh/RISC-V_MYTH_Workshop/master/tlv_lib/risc-v_shell_lib.tlv'])
+
+
+\SV
+   m4_makerchip_module   // (Expanded in Nav-TLV pane.)
+\TLV
+
+
+   // /====================\
+   // | Sum 1 to 9 Program |
+   // \====================/
+   //
+   // Program for MYTH Workshop to test RV32I
+   // Add 1,2,3,...,9 (in that order).
+   //
+   // Regs:
+   //  r10 (a0): In: 0, Out: final sum
+   //  r12 (a2): 10
+   //  r13 (a3): 1..10
+   //  r14 (a4): Sum
+   // 
+   // External to function:
+   m4_asm(ADD, r10, r0, r0)             // Initialize r10 (a0) to 0.
+   // Function:
+   m4_asm(ADD, r14, r10, r0)            // Initialize sum register a4 with 0x0
+   m4_asm(ADDI, r12, r10, 1010)         // Store count of 10 in register a2.
+   m4_asm(ADD, r13, r10, r0)            // Initialize intermediate sum register a3 with 0
+   // Loop:
+   m4_asm(ADD, r14, r13, r14)           // Incremental addition
+   m4_asm(ADDI, r13, r13, 1)            // Increment intermediate register by 1
+   m4_asm(BLT, r13, r12, 1111111111000) // If a3 is less than a2, branch to label named <loop>
+   m4_asm(ADD, r10, r14, r0)            // Store final result to register a0 so that it can be read by main program
+   
+   // Optional:
+   // m4_asm(JAL, r7, 00000000000000000000) // Done. Jump to itself (infinite loop). (Up to 20-bit signed immediate plus implicit 0 bit (unlike JALR) provides byte address; last immediate bit should also be 0)
+   m4_define_hier(['M4_IMEM'], M4_NUM_INSTRS)
+   
+   |cpu
+      @0
+         $reset = *reset;
+         $inc_pc[31:0] = $pc[31:0] + 32'd4;
+         $pc[31:0] = >>1$reset ? 32'b0 : >>3$valid_taken_br ? >>3$br_tgt_pc : >>1$inc_pc[31:0];
+         $imem_rd_en = !$reset;
+         $imem_rd_addr[M4_IMEM_INDEX_CNT-1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
+      @1
+         $instr[31:0] = $imem_rd_data[31:0];
+         $is_i_instr = $instr[6:2] ==? 5'b0000x || 
+                       $instr[6:2] ==? 5'b001x0 || 
+                       $instr[6:2] ==? 5'b11001;
+         $is_r_instr = $instr[6:2] ==? 5'b01011 || 
+                       $instr[6:2] ==? 5'b011x0 || 
+                       $instr[6:2] ==? 5'b10100;
+         $is_s_instr = $instr[6:2] ==? 5'b0100x;
+         $is_b_instr = $instr[6:2] ==? 5'b11000;
+         $is_j_instr = $instr[6:2] ==? 5'b11011;
+         $is_u_instr = $instr[6:2] ==? 5'b0x101;
+         $imm[31:0] = $is_i_instr ? {{21{$instr[31]}}, $instr[30:20]} :
+                      $is_s_instr ? {{21{$instr[31]}}, $instr[30:25], $instr[11:7]} :
+                      $is_b_instr ? {{20{$instr[31]}}, $instr[7], $instr[30:25], $instr[11:8], 1'b0} :
+                      $is_u_instr ? {$instr[31:12], 12'b0} :
+                      $is_j_instr ? {{12{$instr[31]}}, $instr[19:12], $instr[20], $instr[30:21], 1'b0} :
+                                    32'b0;
+         
+         $funct7_valid = $is_r_instr;
+         ?$funct7_valid
+            $funct7[6:0] = $instr[31:25];
+         $funct3_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         ?$funct3_valid
+            $funct3[2:0] = $instr[14:12];
+         $rs1_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs1_valid
+            $rs1[4:0] = $instr[19:15];
+         $rs2_valid = $is_r_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs2_valid
+            $rs2[4:0] = $instr[24:20];
+         $rd_valid = $is_r_instr || $is_i_instr || $is_u_instr || $is_j_instr;
+         ?$rd_valid
+            $rd[4:0] = $instr[11:7];
+         $opcode_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr || $is_u_instr || $is_j_instr;
+         ?$opcode_valid
+            $opcode[6:0] = $instr[6:0];
+            
+         $dec_bits[10:0] = {$funct7[5], $funct3, $opcode};
+         $is_beq   = $dec_bits ==? 11'bx_000_1100011;
+         $is_bne   = $dec_bits ==? 11'bx_001_1100011;
+         $is_blt   = $dec_bits ==? 11'bx_100_1100011;
+         $is_bge   = $dec_bits ==? 11'bx_101_1100011;
+         $is_bltu  = $dec_bits ==? 11'bx_110_1100011;
+         $is_bgeu  = $dec_bits ==? 11'bx_111_1100011;
+         $is_lui   = $dec_bits ==? 11'bx_xxx_0110111;
+         $is_auipc = $dec_bits ==? 11'bx_xxx_0010111;
+         $is_jal   = $dec_bits ==? 11'bx_xxx_1101111;
+         $is_jalr  = $dec_bits ==? 11'bx_000_1100111;
+         $is_load  = $dec_bits ==? 11'bx_xxx_0000011;
+         $is_sb    = $dec_bits ==? 11'bx_000_0100011;
+         $is_sh    = $dec_bits ==? 11'bx_001_0100011;
+         $is_sw    = $dec_bits ==? 11'bx_010_0100011;
+         $is_addi  = $dec_bits ==? 11'bx_000_0010011;
+         $is_slti  = $dec_bits ==? 11'bx_010_0010011;
+         $is_sltiu = $dec_bits ==? 11'bx_011_0010011;
+         $is_xori  = $dec_bits ==? 11'bx_100_0010011;
+         $is_ori   = $dec_bits ==? 11'bx_110_0010011;
+         $is_andi  = $dec_bits ==? 11'bx_111_0010011;
+         $is_slli  = $dec_bits ==? 11'b0_001_0010011;
+         $is_srli  = $dec_bits ==? 11'b0_101_0010011;
+         $is_srai  = $dec_bits ==? 11'b1_101_0010011;
+         $is_add   = $dec_bits ==? 11'b0_000_0110011;
+         $is_sub   = $dec_bits ==? 11'b1_000_0110011;
+         $is_sll   = $dec_bits ==? 11'b0_001_0110011;
+         $is_slt   = $dec_bits ==? 11'b0_010_0110011;
+         $is_sltu  = $dec_bits ==? 11'b0_011_0110011;
+         $is_xor   = $dec_bits ==? 11'b0_100_0110011;
+         $is_srl   = $dec_bits ==? 11'b0_101_0110011;
+         $is_sra   = $dec_bits ==? 11'b1_101_0110011;
+         $is_or    = $dec_bits ==? 11'b0_110_0110011;
+         $is_and   = $dec_bits ==? 11'b0_111_0110011;
+         
+      @2
+         
+         $br_tgt_pc[31:0] = $pc[31:0] + $imm[31:0];
+         $src1_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs1)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs1)) ? >>2$result[31:0] :
+                             $rf_rd_data1[31:0];
+         
+         $src2_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs2)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs2)) ? >>2$result[31:0] :
+                             $rf_rd_data2[31:0];
+         $rf_rd_en1 = $rs1_valid;
+         $rf_rd_index1[4:0] = $rs1[4:0];
+         $rf_rd_en2 = $rs2_valid;
+         $rf_rd_index2[4:0] = $rs2[4:0];
+      @3
+         $taken_br = $is_beq ? ($src1_value == $src2_value) :
+                     $is_bne ? ($src1_value != $src2_value) :
+                     $is_blt ? (($src1_value < $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bge ? (($src1_value >= $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bltu ? ($src1_value < $src2_value) :
+                     $is_bgeu ? ($src1_value >= $src2_value) :
+                     1'b0;
+         $valid_taken_br = $valid && $taken_br;
+         $valid = !(>>1$valid_taken_br || >>2$valid_taken_br);
+         $sltu_rslt = $src1_value < $src2_value;
+         $sltiu_rslt = $src1_value < $imm;
+         $result[31:0] = $is_andi  ? $src1_value & $imm :
+                         $is_ori   ? $src1_value | $imm :
+                         $is_xori  ? $src1_value ^ $imm :
+                         $is_addi  ? $src1_value + $imm :
+                         $is_slli  ? $src1_value << $imm[5:0] :
+                         $is_srli  ? $src1_value >> $imm[5:0] :
+                         $is_and   ? $src1_value & $src2_value :
+                         $is_or    ? $src1_value | $src2_value :
+                         $is_xor   ? $src1_value ^ $src2_value :
+                         $is_add   ? $src1_value + $src2_value :
+                         $is_sub   ? $src1_value - $src2_value :
+                         $is_sll   ? $src1_value << $src2_value[4:0] :
+                         $is_srl   ? $src1_value >> $src2_value[4:0] :
+                         $is_sltu  ? $sltu_rslt :
+                         $is_sltiu ? $sltiu_rslt :
+                         $is_lui   ? {$imm[31:12], 12'b0} :
+                         $is_auipc ? $pc + $imm :
+                         $is_jal   ? $pc + 32'd4 :
+                         $is_jalr  ? $pc + 32'd4 :
+                         $is_slt   ? ( ($src1_value[31] == $src2_value[31]) ? $sltu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_slti  ? ( ($src1_value[31] == $imm[31]) ? $sltiu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_sra   ? ( {{32{$src1_value[31]}}, $src1_value} >> $src2_value[4:0] ) :
+                         $is_srai  ? ( {{32{$src1_value[31]}}, $src1_value} >> $imm[4:0] ) :
+                         32'bx;
+         $rf_wr_en = $valid && $rd_valid && ($rd != 5'b0);
+         $rf_wr_index[4:0] = $rd[4:0];
+         $rf_wr_data[31:0] = $result[31:0];
+         *passed = |cpu/xreg[10]>>5$value == (1+2+3+4+5+6+7+8+9);
+         
+
+
+      // Note: Because of the magic we are using for visualisation, if visualisation is enabled below,
+      //       be sure to avoid having unassigned signals (which you might be using for random inputs)
+      //       other than those specifically expected in the labs. You'll get strange errors for these.
+
+
+   
+   // Assert these to end simulation (before Makerchip cycle limit).
+   //*passed = *cyc_cnt > 40;
+   *failed = 1'b0;
+   
+   // Macro instantiations for:
+   //  o instruction memory
+   //  o register file
+   //  o data memory
+   //  o CPU visualization
+   |cpu
+      m4+imem(@1)    // Args: (read stage)
+      m4+rf(@2, @3)  // Args: (read stage, write stage) - if equal, no register bypass is required
+      //m4+dmem(@4)    // Args: (read/write stage)
+
+
+   m4+cpu_viz(@4)    // For visualisation, argument should be at least equal to the last stage of CPU logic. @4 would work for all labs.
+\SV
+   endmodule
+
+
+
+
+
+
+
+
+
+
+
+
+OUTPUT : 
+  
+
+
+
+VERIFY LINK : 
+https://myth.makerchip.com/v140/ide/~0L9fPhGx/p-0GZhJX
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Load and Store Operations :
+  
+
+Load and Store instructions are used to transfer data between registers and memory. A Load instruction reads data from memory and stores it in a destination register (rd). A Store instruction writes data from a source register (rs2) into memory. In both cases, the memory address is calculated by adding a base register value (rs1) and an immediate offset. Different load and store types support transferring a word, half-word, or byte of data. These instructions allow the processor to access and update data stored in memory efficiently.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Load Instruction Timing :
+  
+
+The pipeline stages are PC (P), Decode (D), Register Read (R), Execute (E), and Write Back (W). When a Load instruction is executed, it calculates the memory address during the Execute stage and accesses memory afterward. If the following instruction needs the loaded value, it must wait until the data is available. Therefore, the pipeline temporarily pauses the dependent instruction and then resumes normal execution once the data has been received.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Load Hazard and Pipeline Stall :
+  
+
+In a pipelined processor, a Load instruction reads data from memory and places it into a register. The data becomes available only after the memory access stage, so the next instruction may not receive the required value immediately. If an instruction depends on the loaded data, the processor inserts a one-cycle stall (bubble) in the pipeline. This delay allows the Load instruction to complete and provide the correct data before the dependent instruction continues execution.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Lab: Redirect Loads :
+  
+
+In this lab, the processor is modified to handle load instructions correctly in a pipelined design. When a load instruction is executed, the data is not available immediately because it must first be read from data memory. Therefore, the processor clears the valid signal for the instructions that follow the load, similar to how branch instructions are handled. The Program Counter (PC) is redirected to an earlier instruction position so that the required instruction can be fetched again after the load data becomes available. This ensures that the correct data is used and prevents invalid execution. After implementing the redirect logic, the design should be debugged and tested to confirm that load operations work properly and the processor state is saved correctly.
+
+
+
+
+
+
+
+
+PROGRAM CODE :
+\m4_TLV_version 1d: tl-x.org
+\SV
+   // This code can be found in: https://github.com/stevehoover/RISC-V_MYTH_Workshop
+   
+   m4_include_lib(['https://raw.githubusercontent.com/BalaDhinesh/RISC-V_MYTH_Workshop/master/tlv_lib/risc-v_shell_lib.tlv'])
+
+
+\SV
+   m4_makerchip_module   // (Expanded in Nav-TLV pane.)
+\TLV
+
+
+   // /====================\
+   // | Sum 1 to 9 Program |
+   // \====================/
+   //
+   // Program for MYTH Workshop to test RV32I
+   // Add 1,2,3,...,9 (in that order).
+   //
+   // Regs:
+   //  r10 (a0): In: 0, Out: final sum
+   //  r12 (a2): 10
+   //  r13 (a3): 1..10
+   //  r14 (a4): Sum
+   // 
+   // External to function:
+   m4_asm(ADD, r10, r0, r0)             // Initialize r10 (a0) to 0.
+   // Function:
+   m4_asm(ADD, r14, r10, r0)            // Initialize sum register a4 with 0x0
+   m4_asm(ADDI, r12, r10, 1010)         // Store count of 10 in register a2.
+   m4_asm(ADD, r13, r10, r0)            // Initialize intermediate sum register a3 with 0
+   // Loop:
+   m4_asm(ADD, r14, r13, r14)           // Incremental addition
+   m4_asm(ADDI, r13, r13, 1)            // Increment intermediate register by 1
+   m4_asm(BLT, r13, r12, 1111111111000) // If a3 is less than a2, branch to label named <loop>
+   m4_asm(ADD, r10, r14, r0)            // Store final result to register a0 so that it can be read by main program
+   
+   // Optional:
+   // m4_asm(JAL, r7, 00000000000000000000) // Done. Jump to itself (infinite loop). (Up to 20-bit signed immediate plus implicit 0 bit (unlike JALR) provides byte address; last immediate bit should also be 0)
+   m4_define_hier(['M4_IMEM'], M4_NUM_INSTRS)
+   
+   |cpu
+      @0
+         $reset = *reset;
+         $inc_pc[31:0] = $pc[31:0] + 32'd4;
+         $pc[31:0] = >>1$reset ? 32'b0 :
+                     >>3$valid_taken_br ? >>3$br_tgt_pc :
+                     >>3$valid_load ? >>3$inc_pc :
+                     >>1$inc_pc[31:0];
+         $imem_rd_en = !$reset;
+         $imem_rd_addr[M4_IMEM_INDEX_CNT-1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
+      @1
+         $instr[31:0] = $imem_rd_data[31:0];
+         $is_i_instr = $instr[6:2] ==? 5'b0000x || 
+                       $instr[6:2] ==? 5'b001x0 || 
+                       $instr[6:2] ==? 5'b11001;
+         $is_r_instr = $instr[6:2] ==? 5'b01011 || 
+                       $instr[6:2] ==? 5'b011x0 || 
+                       $instr[6:2] ==? 5'b10100;
+         $is_s_instr = $instr[6:2] ==? 5'b0100x;
+         $is_b_instr = $instr[6:2] ==? 5'b11000;
+         $is_j_instr = $instr[6:2] ==? 5'b11011;
+         $is_u_instr = $instr[6:2] ==? 5'b0x101;
+         $imm[31:0] = $is_i_instr ? {{21{$instr[31]}}, $instr[30:20]} :
+                      $is_s_instr ? {{21{$instr[31]}}, $instr[30:25], $instr[11:7]} :
+                      $is_b_instr ? {{20{$instr[31]}}, $instr[7], $instr[30:25], $instr[11:8], 1'b0} :
+                      $is_u_instr ? {$instr[31:12], 12'b0} :
+                      $is_j_instr ? {{12{$instr[31]}}, $instr[19:12], $instr[20], $instr[30:21], 1'b0} :
+                                    32'b0;
+         
+         $funct7_valid = $is_r_instr;
+         ?$funct7_valid
+            $funct7[6:0] = $instr[31:25];
+         $funct3_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         ?$funct3_valid
+            $funct3[2:0] = $instr[14:12];
+         $rs1_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs1_valid
+            $rs1[4:0] = $instr[19:15];
+         $rs2_valid = $is_r_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs2_valid
+            $rs2[4:0] = $instr[24:20];
+         $rd_valid = $is_r_instr || $is_i_instr || $is_u_instr || $is_j_instr;
+         ?$rd_valid
+            $rd[4:0] = $instr[11:7];
+         $opcode_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr || $is_u_instr || $is_j_instr;
+         ?$opcode_valid
+            $opcode[6:0] = $instr[6:0];
+            
+         $dec_bits[10:0] = {$funct7[5], $funct3, $opcode};
+         $is_beq   = $dec_bits ==? 11'bx_000_1100011;
+         $is_bne   = $dec_bits ==? 11'bx_001_1100011;
+         $is_blt   = $dec_bits ==? 11'bx_100_1100011;
+         $is_bge   = $dec_bits ==? 11'bx_101_1100011;
+         $is_bltu  = $dec_bits ==? 11'bx_110_1100011;
+         $is_bgeu  = $dec_bits ==? 11'bx_111_1100011;
+         $is_lui   = $dec_bits ==? 11'bx_xxx_0110111;
+         $is_auipc = $dec_bits ==? 11'bx_xxx_0010111;
+         $is_jal   = $dec_bits ==? 11'bx_xxx_1101111;
+         $is_jalr  = $dec_bits ==? 11'bx_000_1100111;
+         $is_load  = $dec_bits ==? 11'bx_xxx_0000011;
+         $is_sb    = $dec_bits ==? 11'bx_000_0100011;
+         $is_sh    = $dec_bits ==? 11'bx_001_0100011;
+         $is_sw    = $dec_bits ==? 11'bx_010_0100011;
+         $is_addi  = $dec_bits ==? 11'bx_000_0010011;
+         $is_slti  = $dec_bits ==? 11'bx_010_0010011;
+         $is_sltiu = $dec_bits ==? 11'bx_011_0010011;
+         $is_xori  = $dec_bits ==? 11'bx_100_0010011;
+         $is_ori   = $dec_bits ==? 11'bx_110_0010011;
+         $is_andi  = $dec_bits ==? 11'bx_111_0010011;
+         $is_slli  = $dec_bits ==? 11'b0_001_0010011;
+         $is_srli  = $dec_bits ==? 11'b0_101_0010011;
+         $is_srai  = $dec_bits ==? 11'b1_101_0010011;
+         $is_add   = $dec_bits ==? 11'b0_000_0110011;
+         $is_sub   = $dec_bits ==? 11'b1_000_0110011;
+         $is_sll   = $dec_bits ==? 11'b0_001_0110011;
+         $is_slt   = $dec_bits ==? 11'b0_010_0110011;
+         $is_sltu  = $dec_bits ==? 11'b0_011_0110011;
+         $is_xor   = $dec_bits ==? 11'b0_100_0110011;
+         $is_srl   = $dec_bits ==? 11'b0_101_0110011;
+         $is_sra   = $dec_bits ==? 11'b1_101_0110011;
+         $is_or    = $dec_bits ==? 11'b0_110_0110011;
+         $is_and   = $dec_bits ==? 11'b0_111_0110011;
+         
+      @2
+         
+         $br_tgt_pc[31:0] = $pc[31:0] + $imm[31:0];
+         $src1_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs1)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs1)) ? >>2$result[31:0] :
+                             $rf_rd_data1[31:0];
+         
+         $src2_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs2)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs2)) ? >>2$result[31:0] :
+                             $rf_rd_data2[31:0];
+         $rf_rd_en1 = $rs1_valid;
+         $rf_rd_index1[4:0] = $rs1[4:0];
+         $rf_rd_en2 = $rs2_valid;
+         $rf_rd_index2[4:0] = $rs2[4:0];
+      @3
+         $taken_br = $is_beq ? ($src1_value == $src2_value) :
+                     $is_bne ? ($src1_value != $src2_value) :
+                     $is_blt ? (($src1_value < $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bge ? (($src1_value >= $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bltu ? ($src1_value < $src2_value) :
+                     $is_bgeu ? ($src1_value >= $src2_value) :
+                     1'b0;
+         $valid_taken_br = $valid && $taken_br;
+         $valid_load = $valid && $is_load;
+         $valid = !(>>1$valid_taken_br || >>2$valid_taken_br || >>1$valid_load || >>2$valid_load);
+         $sltu_rslt = $src1_value < $src2_value;
+         $sltiu_rslt = $src1_value < $imm;
+         $result[31:0] = $is_andi  ? $src1_value & $imm :
+                         $is_ori   ? $src1_value | $imm :
+                         $is_xori  ? $src1_value ^ $imm :
+                         $is_addi  ? $src1_value + $imm :
+                         $is_slli  ? $src1_value << $imm[5:0] :
+                         $is_srli  ? $src1_value >> $imm[5:0] :
+                         $is_and   ? $src1_value & $src2_value :
+                         $is_or    ? $src1_value | $src2_value :
+                         $is_xor   ? $src1_value ^ $src2_value :
+                         $is_add   ? $src1_value + $src2_value :
+                         $is_sub   ? $src1_value - $src2_value :
+                         $is_sll   ? $src1_value << $src2_value[4:0] :
+                         $is_srl   ? $src1_value >> $src2_value[4:0] :
+                         $is_sltu  ? $sltu_rslt :
+                         $is_sltiu ? $sltiu_rslt :
+                         $is_lui   ? {$imm[31:12], 12'b0} :
+                         $is_auipc ? $pc + $imm :
+                         $is_jal   ? $pc + 32'd4 :
+                         $is_jalr  ? $pc + 32'd4 :
+                         $is_slt   ? ( ($src1_value[31] == $src2_value[31]) ? $sltu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_slti  ? ( ($src1_value[31] == $imm[31]) ? $sltiu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_sra   ? ( {{32{$src1_value[31]}}, $src1_value} >> $src2_value[4:0] ) :
+                         $is_srai  ? ( {{32{$src1_value[31]}}, $src1_value} >> $imm[4:0] ) :
+                         32'bx;
+         $rf_wr_en = $valid && $rd_valid && ($rd != 5'b0);
+         $rf_wr_index[4:0] = $rd[4:0];
+         $rf_wr_data[31:0] = $result[31:0];
+         *passed = |cpu/xreg[10]>>5$value == (1+2+3+4+5+6+7+8+9);
+         
+
+
+      // Note: Because of the magic we are using for visualisation, if visualisation is enabled below,
+      //       be sure to avoid having unassigned signals (which you might be using for random inputs)
+      //       other than those specifically expected in the labs. You'll get strange errors for these.
+
+
+   
+   // Assert these to end simulation (before Makerchip cycle limit).
+   //*passed = *cyc_cnt > 40;
+   *failed = 1'b0;
+   
+   // Macro instantiations for:
+   //  o instruction memory
+   //  o register file
+   //  o data memory
+   //  o CPU visualization
+   |cpu
+      m4+imem(@1)    // Args: (read stage)
+      m4+rf(@2, @3)  // Args: (read stage, write stage) - if equal, no register bypass is required
+      //m4+dmem(@4)    // Args: (read/write stage)
+
+
+   m4+cpu_viz(@4)    // For visualisation, argument should be at least equal to the last stage of CPU logic. @4 would work for all labs.
+\SV
+   endmodule
+
+
+
+
+
+
+
+
+OUTPUT : 
+  
+
+
+
+VERIFY LINK : 
+https://myth.makerchip.com/v140/ide/~0L9fPhGx/p-0JZh8E
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Lab: Load Data :
+  
+
+This lab adds support for loading and storing data using a small data memory (DMem). The memory interface signals are connected using address bits [5:2] to select memory locations. For load and store instructions, the processor calculates the memory address in the same way as an addi instruction. A multiplexer is added so that the register file can receive data coming from memory during a load operation. The processor then writes the loaded data back into the destination register after the required pipeline delay. Finally, the design is verified to ensure that data is correctly saved to and retrieved from memory.
+  
+
+
+
+PROGRAM CODE :
+\m4_TLV_version 1d: tl-x.org
+\SV
+   // This code can be found in: https://github.com/stevehoover/RISC-V_MYTH_Workshop
+   
+   m4_include_lib(['https://raw.githubusercontent.com/BalaDhinesh/RISC-V_MYTH_Workshop/master/tlv_lib/risc-v_shell_lib.tlv'])
+
+
+\SV
+   m4_makerchip_module   // (Expanded in Nav-TLV pane.)
+\TLV
+
+
+   // /====================\
+   // | Sum 1 to 9 Program |
+   // \====================/
+   //
+   // Program for MYTH Workshop to test RV32I
+   // Add 1,2,3,...,9 (in that order).
+   //
+   // Regs:
+   //  r10 (a0): In: 0, Out: final sum
+   //  r12 (a2): 10
+   //  r13 (a3): 1..10
+   //  r14 (a4): Sum
+   // 
+   // External to function:
+   m4_asm(ADD, r10, r0, r0)             // Initialize r10 (a0) to 0.
+   // Function:
+   m4_asm(ADD, r14, r10, r0)            // Initialize sum register a4 with 0x0
+   m4_asm(ADDI, r12, r10, 1010)         // Store count of 10 in register a2.
+   m4_asm(ADD, r13, r10, r0)            // Initialize intermediate sum register a3 with 0
+   // Loop:
+   m4_asm(ADD, r14, r13, r14)           // Incremental addition
+   m4_asm(ADDI, r13, r13, 1)            // Increment intermediate register by 1
+   m4_asm(BLT, r13, r12, 1111111111000) // If a3 is less than a2, branch to label named <loop>
+   m4_asm(ADD, r10, r14, r0)            // Store final result to register a0 so that it can be read by main program
+   
+   // Optional:
+   // m4_asm(JAL, r7, 00000000000000000000) // Done. Jump to itself (infinite loop). (Up to 20-bit signed immediate plus implicit 0 bit (unlike JALR) provides byte address; last immediate bit should also be 0)
+   m4_define_hier(['M4_IMEM'], M4_NUM_INSTRS)
+   
+   |cpu
+      @0
+         $reset = *reset;
+         $inc_pc[31:0] = $pc[31:0] + 32'd4;
+         $pc[31:0] = >>1$reset ? 32'b0 :
+                     >>3$valid_taken_br ? >>3$br_tgt_pc :
+                     >>3$valid_load ? >>3$inc_pc :
+                     >>1$inc_pc[31:0];
+         $imem_rd_en = !$reset;
+         $imem_rd_addr[M4_IMEM_INDEX_CNT-1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
+      @1
+         $instr[31:0] = $imem_rd_data[31:0];
+         $is_i_instr = $instr[6:2] ==? 5'b0000x || 
+                       $instr[6:2] ==? 5'b001x0 || 
+                       $instr[6:2] ==? 5'b11001;
+         $is_r_instr = $instr[6:2] ==? 5'b01011 || 
+                       $instr[6:2] ==? 5'b011x0 || 
+                       $instr[6:2] ==? 5'b10100;
+         $is_s_instr = $instr[6:2] ==? 5'b0100x;
+         $is_b_instr = $instr[6:2] ==? 5'b11000;
+         $is_j_instr = $instr[6:2] ==? 5'b11011;
+         $is_u_instr = $instr[6:2] ==? 5'b0x101;
+         $imm[31:0] = $is_i_instr ? {{21{$instr[31]}}, $instr[30:20]} :
+                      $is_s_instr ? {{21{$instr[31]}}, $instr[30:25], $instr[11:7]} :
+                      $is_b_instr ? {{20{$instr[31]}}, $instr[7], $instr[30:25], $instr[11:8], 1'b0} :
+                      $is_u_instr ? {$instr[31:12], 12'b0} :
+                      $is_j_instr ? {{12{$instr[31]}}, $instr[19:12], $instr[20], $instr[30:21], 1'b0} :
+                                    32'b0;
+         
+         $funct7_valid = $is_r_instr;
+         ?$funct7_valid
+            $funct7[6:0] = $instr[31:25];
+         $funct3_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         ?$funct3_valid
+            $funct3[2:0] = $instr[14:12];
+         $rs1_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs1_valid
+            $rs1[4:0] = $instr[19:15];
+         $rs2_valid = $is_r_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs2_valid
+            $rs2[4:0] = $instr[24:20];
+         $rd_valid = $is_r_instr || $is_i_instr || $is_u_instr || $is_j_instr;
+         ?$rd_valid
+            $rd[4:0] = $instr[11:7];
+         $opcode_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr || $is_u_instr || $is_j_instr;
+         ?$opcode_valid
+            $opcode[6:0] = $instr[6:0];
+            
+         $dec_bits[10:0] = {$funct7[5], $funct3, $opcode};
+         $is_beq   = $dec_bits ==? 11'bx_000_1100011;
+         $is_bne   = $dec_bits ==? 11'bx_001_1100011;
+         $is_blt   = $dec_bits ==? 11'bx_100_1100011;
+         $is_bge   = $dec_bits ==? 11'bx_101_1100011;
+         $is_bltu  = $dec_bits ==? 11'bx_110_1100011;
+         $is_bgeu  = $dec_bits ==? 11'bx_111_1100011;
+         $is_lui   = $dec_bits ==? 11'bx_xxx_0110111;
+         $is_auipc = $dec_bits ==? 11'bx_xxx_0010111;
+         $is_jal   = $dec_bits ==? 11'bx_xxx_1101111;
+         $is_jalr  = $dec_bits ==? 11'bx_000_1100111;
+         $is_load  = $dec_bits ==? 11'bx_xxx_0000011;
+         $is_sb    = $dec_bits ==? 11'bx_000_0100011;
+         $is_sh    = $dec_bits ==? 11'bx_001_0100011;
+         $is_sw    = $dec_bits ==? 11'bx_010_0100011;
+         $is_addi  = $dec_bits ==? 11'bx_000_0010011;
+         $is_slti  = $dec_bits ==? 11'bx_010_0010011;
+         $is_sltiu = $dec_bits ==? 11'bx_011_0010011;
+         $is_xori  = $dec_bits ==? 11'bx_100_0010011;
+         $is_ori   = $dec_bits ==? 11'bx_110_0010011;
+         $is_andi  = $dec_bits ==? 11'bx_111_0010011;
+         $is_slli  = $dec_bits ==? 11'b0_001_0010011;
+         $is_srli  = $dec_bits ==? 11'b0_101_0010011;
+         $is_srai  = $dec_bits ==? 11'b1_101_0010011;
+         $is_add   = $dec_bits ==? 11'b0_000_0110011;
+         $is_sub   = $dec_bits ==? 11'b1_000_0110011;
+         $is_sll   = $dec_bits ==? 11'b0_001_0110011;
+         $is_slt   = $dec_bits ==? 11'b0_010_0110011;
+         $is_sltu  = $dec_bits ==? 11'b0_011_0110011;
+         $is_xor   = $dec_bits ==? 11'b0_100_0110011;
+         $is_srl   = $dec_bits ==? 11'b0_101_0110011;
+         $is_sra   = $dec_bits ==? 11'b1_101_0110011;
+         $is_or    = $dec_bits ==? 11'b0_110_0110011;
+         $is_and   = $dec_bits ==? 11'b0_111_0110011;
+         
+      @2
+         
+         $br_tgt_pc[31:0] = $pc[31:0] + $imm[31:0];
+         $src1_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs1)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs1)) ? >>2$result[31:0] :
+                             $rf_rd_data1[31:0];
+         
+         $src2_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs2)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs2)) ? >>2$result[31:0] :
+                             $rf_rd_data2[31:0];
+         $rf_rd_en1 = $rs1_valid;
+         $rf_rd_index1[4:0] = $rs1[4:0];
+         $rf_rd_en2 = $rs2_valid;
+         $rf_rd_index2[4:0] = $rs2[4:0];
+      @3
+         $taken_br = $is_beq ? ($src1_value == $src2_value) :
+                     $is_bne ? ($src1_value != $src2_value) :
+                     $is_blt ? (($src1_value < $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bge ? (($src1_value >= $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bltu ? ($src1_value < $src2_value) :
+                     $is_bgeu ? ($src1_value >= $src2_value) :
+                     1'b0;
+         $valid_taken_br = $valid && $taken_br;
+         $valid_load = $valid && $is_load;
+         $valid = !(>>1$valid_taken_br || >>2$valid_taken_br || >>1$valid_load || >>2$valid_load);
+         $sltu_rslt = $src1_value < $src2_value;
+         $sltiu_rslt = $src1_value < $imm;
+         $result[31:0] = ($is_addi || $is_load || $is_s_instr) ? $src1_value + $imm :
+                         $is_andi  ? $src1_value & $imm :
+                         $is_ori   ? $src1_value | $imm :
+                         $is_xori  ? $src1_value ^ $imm :
+                         $is_addi  ? $src1_value + $imm :
+                         $is_slli  ? $src1_value << $imm[5:0] :
+                         $is_srli  ? $src1_value >> $imm[5:0] :
+                         $is_and   ? $src1_value & $src2_value :
+                         $is_or    ? $src1_value | $src2_value :
+                         $is_xor   ? $src1_value ^ $src2_value :
+                         $is_add   ? $src1_value + $src2_value :
+                         $is_sub   ? $src1_value - $src2_value :
+                         $is_sll   ? $src1_value << $src2_value[4:0] :
+                         $is_srl   ? $src1_value >> $src2_value[4:0] :
+                         $is_sltu  ? $sltu_rslt :
+                         $is_sltiu ? $sltiu_rslt :
+                         $is_lui   ? {$imm[31:12], 12'b0} :
+                         $is_auipc ? $pc + $imm :
+                         $is_jal   ? $pc + 32'd4 :
+                         $is_jalr  ? $pc + 32'd4 :
+                         $is_slt   ? ( ($src1_value[31] == $src2_value[31]) ? $sltu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_slti  ? ( ($src1_value[31] == $imm[31]) ? $sltiu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_sra   ? ( {{32{$src1_value[31]}}, $src1_value} >> $src2_value[4:0] ) :
+                         $is_srai  ? ( {{32{$src1_value[31]}}, $src1_value} >> $imm[4:0] ) :
+                         32'bx;
+         $rf_wr_en = ($valid && $rd_valid && ($rd != 5'b0) || >>2$valid_load);
+         $rf_wr_index[4:0] = $valid ? $rd[4:0] : >>2$rd[4:0];
+         $rf_wr_data[31:0] = $valid ? $result[31:0] : >>2$ld_data[31:0];
+         *passed = |cpu/xreg[10]>>5$value == (1+2+3+4+5+6+7+8+9);
+      
+      @4
+         $dmem_rd_en = $valid_load;
+         $dmem_wr_en = $valid && $is_s_instr;
+         $dmem_addr[3:0] = $result[5:2];
+         $dmem_wr_data[31:0] = $src2_value[31:0];
+         
+      @5
+         $ld_data[31:0] = $dmem_rd_data[31:0];
+
+
+      // Note: Because of the magic we are using for visualisation, if visualisation is enabled below,
+      //       be sure to avoid having unassigned signals (which you might be using for random inputs)
+      //       other than those specifically expected in the labs. You'll get strange errors for these.
+
+
+   
+   // Assert these to end simulation (before Makerchip cycle limit).
+   //*passed = *cyc_cnt > 40;
+   *failed = 1'b0;
+   
+   // Macro instantiations for:
+   //  o instruction memory
+   //  o register file
+   //  o data memory
+   //  o CPU visualization
+   |cpu
+      m4+imem(@1)    // Args: (read stage)
+      m4+rf(@2, @3)  // Args: (read stage, write stage) - if equal, no register bypass is required
+      m4+dmem(@4)    // Args: (read/write stage)
+
+
+   m4+cpu_viz(@4)    // For visualisation, argument should be at least equal to the last stage of CPU logic. @4 would work for all labs.
+\SV
+   endmodule
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+OUTPUT : 
+  
+
+
+
+VERIFY LINK : 
+https://myth.makerchip.com/v140/ide/~0L9fPhGx/p-0KOhqW
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Lab: Load/Store in Program :
+  
+
+In this lab, the test program is updated to perform both store and load operations. The final result value is first stored into a memory location using a store word (SW) instruction. Then, a load word (LW) instruction reads the value back from memory and places it into register x15. The test condition is modified to check the value in xreg[15] instead of the original register. After making these changes, the program is debugged to verify that the loop exits correctly and that the store and load instructions execute successfully, confirming proper memory functionality in the processor.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+PROGRAM CODE :
+\m4_TLV_version 1d: tl-x.org
+\SV
+   // This code can be found in: https://github.com/stevehoover/RISC-V_MYTH_Workshop
+   
+   m4_include_lib(['https://raw.githubusercontent.com/BalaDhinesh/RISC-V_MYTH_Workshop/master/tlv_lib/risc-v_shell_lib.tlv'])
+
+
+\SV
+   m4_makerchip_module   // (Expanded in Nav-TLV pane.)
+\TLV
+
+
+   // /====================\
+   // | Sum 1 to 9 Program |
+   // \====================/
+   //
+   // Program for MYTH Workshop to test RV32I
+   // Add 1,2,3,...,9 (in that order).
+   //
+   // Regs:
+   //  r10 (a0): In: 0, Out: final sum
+   //  r12 (a2): 10
+   //  r13 (a3): 1..10
+   //  r14 (a4): Sum
+   // 
+   // External to function:
+   m4_asm(ADD, r10, r0, r0)             // Initialize r10 (a0) to 0.
+   // Function:
+   m4_asm(ADD, r14, r10, r0)            // Initialize sum register a4 with 0x0
+   m4_asm(ADDI, r12, r10, 1010)         // Store count of 10 in register a2.
+   m4_asm(ADD, r13, r10, r0)            // Initialize intermediate sum register a3 with 0
+   // Loop:
+   m4_asm(ADD, r14, r13, r14)           // Incremental addition
+   m4_asm(ADDI, r13, r13, 1)            // Increment intermediate register by 1
+   m4_asm(BLT, r13, r12, 1111111111000) // If a3 is less than a2, branch to label named <loop>
+   m4_asm(ADD, r10, r14, r0)            // Store final result to register a0 so that it can be read by main program
+   m4_asm(SW, r0, r10, 100)
+   m4_asm(LW, r15, r0, 100)
+
+
+   
+   // Optional:
+   // m4_asm(JAL, r7, 00000000000000000000) // Done. Jump to itself (infinite loop). (Up to 20-bit signed immediate plus implicit 0 bit (unlike JALR) provides byte address; last immediate bit should also be 0)
+   m4_define_hier(['M4_IMEM'], M4_NUM_INSTRS)
+   
+   |cpu
+      @0
+         $reset = *reset;
+         $inc_pc[31:0] = $pc[31:0] + 32'd4;
+         $pc[31:0] = >>1$reset ? 32'b0 :
+                     >>3$valid_taken_br ? >>3$br_tgt_pc :
+                     >>3$valid_load ? >>3$inc_pc :
+                     >>1$inc_pc[31:0];
+         $imem_rd_en = !$reset;
+         $imem_rd_addr[M4_IMEM_INDEX_CNT-1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
+      @1
+         $instr[31:0] = $imem_rd_data[31:0];
+         $is_i_instr = $instr[6:2] ==? 5'b0000x || 
+                       $instr[6:2] ==? 5'b001x0 || 
+                       $instr[6:2] ==? 5'b11001;
+         $is_r_instr = $instr[6:2] ==? 5'b01011 || 
+                       $instr[6:2] ==? 5'b011x0 || 
+                       $instr[6:2] ==? 5'b10100;
+         $is_s_instr = $instr[6:2] ==? 5'b0100x;
+         $is_b_instr = $instr[6:2] ==? 5'b11000;
+         $is_j_instr = $instr[6:2] ==? 5'b11011;
+         $is_u_instr = $instr[6:2] ==? 5'b0x101;
+         $imm[31:0] = $is_i_instr ? {{21{$instr[31]}}, $instr[30:20]} :
+                      $is_s_instr ? {{21{$instr[31]}}, $instr[30:25], $instr[11:7]} :
+                      $is_b_instr ? {{20{$instr[31]}}, $instr[7], $instr[30:25], $instr[11:8], 1'b0} :
+                      $is_u_instr ? {$instr[31:12], 12'b0} :
+                      $is_j_instr ? {{12{$instr[31]}}, $instr[19:12], $instr[20], $instr[30:21], 1'b0} :
+                                    32'b0;
+         
+         $funct7_valid = $is_r_instr;
+         ?$funct7_valid
+            $funct7[6:0] = $instr[31:25];
+         $funct3_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         ?$funct3_valid
+            $funct3[2:0] = $instr[14:12];
+         $rs1_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs1_valid
+            $rs1[4:0] = $instr[19:15];
+         $rs2_valid = $is_r_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs2_valid
+            $rs2[4:0] = $instr[24:20];
+         $rd_valid = $is_r_instr || $is_i_instr || $is_u_instr || $is_j_instr;
+         ?$rd_valid
+            $rd[4:0] = $instr[11:7];
+         $opcode_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr || $is_u_instr || $is_j_instr;
+         ?$opcode_valid
+            $opcode[6:0] = $instr[6:0];
+            
+         $dec_bits[10:0] = {$funct7[5], $funct3, $opcode};
+         $is_beq   = $dec_bits ==? 11'bx_000_1100011;
+         $is_bne   = $dec_bits ==? 11'bx_001_1100011;
+         $is_blt   = $dec_bits ==? 11'bx_100_1100011;
+         $is_bge   = $dec_bits ==? 11'bx_101_1100011;
+         $is_bltu  = $dec_bits ==? 11'bx_110_1100011;
+         $is_bgeu  = $dec_bits ==? 11'bx_111_1100011;
+         $is_lui   = $dec_bits ==? 11'bx_xxx_0110111;
+         $is_auipc = $dec_bits ==? 11'bx_xxx_0010111;
+         $is_jal   = $dec_bits ==? 11'bx_xxx_1101111;
+         $is_jalr  = $dec_bits ==? 11'bx_000_1100111;
+         $is_load  = $dec_bits ==? 11'bx_xxx_0000011;
+         $is_sb    = $dec_bits ==? 11'bx_000_0100011;
+         $is_sh    = $dec_bits ==? 11'bx_001_0100011;
+         $is_sw    = $dec_bits ==? 11'bx_010_0100011;
+         $is_addi  = $dec_bits ==? 11'bx_000_0010011;
+         $is_slti  = $dec_bits ==? 11'bx_010_0010011;
+         $is_sltiu = $dec_bits ==? 11'bx_011_0010011;
+         $is_xori  = $dec_bits ==? 11'bx_100_0010011;
+         $is_ori   = $dec_bits ==? 11'bx_110_0010011;
+         $is_andi  = $dec_bits ==? 11'bx_111_0010011;
+         $is_slli  = $dec_bits ==? 11'b0_001_0010011;
+         $is_srli  = $dec_bits ==? 11'b0_101_0010011;
+         $is_srai  = $dec_bits ==? 11'b1_101_0010011;
+         $is_add   = $dec_bits ==? 11'b0_000_0110011;
+         $is_sub   = $dec_bits ==? 11'b1_000_0110011;
+         $is_sll   = $dec_bits ==? 11'b0_001_0110011;
+         $is_slt   = $dec_bits ==? 11'b0_010_0110011;
+         $is_sltu  = $dec_bits ==? 11'b0_011_0110011;
+         $is_xor   = $dec_bits ==? 11'b0_100_0110011;
+         $is_srl   = $dec_bits ==? 11'b0_101_0110011;
+         $is_sra   = $dec_bits ==? 11'b1_101_0110011;
+         $is_or    = $dec_bits ==? 11'b0_110_0110011;
+         $is_and   = $dec_bits ==? 11'b0_111_0110011;
+         
+      @2
+         
+         $br_tgt_pc[31:0] = $pc[31:0] + $imm[31:0];
+         $src1_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs1)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs1)) ? >>2$result[31:0] :
+                             $rf_rd_data1[31:0];
+         
+         $src2_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs2)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs2)) ? >>2$result[31:0] :
+                             $rf_rd_data2[31:0];
+         $rf_rd_en1 = $rs1_valid;
+         $rf_rd_index1[4:0] = $rs1[4:0];
+         $rf_rd_en2 = $rs2_valid;
+         $rf_rd_index2[4:0] = $rs2[4:0];
+      @3
+         $taken_br = $is_beq ? ($src1_value == $src2_value) :
+                     $is_bne ? ($src1_value != $src2_value) :
+                     $is_blt ? (($src1_value < $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bge ? (($src1_value >= $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bltu ? ($src1_value < $src2_value) :
+                     $is_bgeu ? ($src1_value >= $src2_value) :
+                     1'b0;
+         $valid_taken_br = $valid && $taken_br;
+         $valid_load = $valid && $is_load;
+         $valid = !(>>1$valid_taken_br || >>2$valid_taken_br || >>1$valid_load || >>2$valid_load);
+         $sltu_rslt = $src1_value < $src2_value;
+         $sltiu_rslt = $src1_value < $imm;
+         $result[31:0] = ($is_addi || $is_load || $is_s_instr) ? $src1_value + $imm :
+                         $is_andi  ? $src1_value & $imm :
+                         $is_ori   ? $src1_value | $imm :
+                         $is_xori  ? $src1_value ^ $imm :
+                         $is_addi  ? $src1_value + $imm :
+                         $is_slli  ? $src1_value << $imm[5:0] :
+                         $is_srli  ? $src1_value >> $imm[5:0] :
+                         $is_and   ? $src1_value & $src2_value :
+                         $is_or    ? $src1_value | $src2_value :
+                         $is_xor   ? $src1_value ^ $src2_value :
+                         $is_add   ? $src1_value + $src2_value :
+                         $is_sub   ? $src1_value - $src2_value :
+                         $is_sll   ? $src1_value << $src2_value[4:0] :
+                         $is_srl   ? $src1_value >> $src2_value[4:0] :
+                         $is_sltu  ? $sltu_rslt :
+                         $is_sltiu ? $sltiu_rslt :
+                         $is_lui   ? {$imm[31:12], 12'b0} :
+                         $is_auipc ? $pc + $imm :
+                         $is_jal   ? $pc + 32'd4 :
+                         $is_jalr  ? $pc + 32'd4 :
+                         $is_slt   ? ( ($src1_value[31] == $src2_value[31]) ? $sltu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_slti  ? ( ($src1_value[31] == $imm[31]) ? $sltiu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_sra   ? ( {{32{$src1_value[31]}}, $src1_value} >> $src2_value[4:0] ) :
+                         $is_srai  ? ( {{32{$src1_value[31]}}, $src1_value} >> $imm[4:0] ) :
+                         32'bx;
+         $rf_wr_en = ($valid && $rd_valid && ($rd != 5'b0) || >>2$valid_load);
+         $rf_wr_index[4:0] = $valid ? $rd[4:0] : >>2$rd[4:0];
+         $rf_wr_data[31:0] = $valid ? $result[31:0] : >>2$ld_data[31:0];
+      
+      @4
+         $dmem_rd_en = $valid_load;
+         $dmem_wr_en = $valid && $is_s_instr;
+         $dmem_addr[3:0] = $result[5:2];
+         $dmem_wr_data[31:0] = $src2_value[31:0];
+         
+      @5
+         $ld_data[31:0] = $dmem_rd_data[31:0];
+         *passed = |cpu/xreg[15]>>5$value == (1+2+3+4+5+6+7+8+9);
+         
+      // Note: Because of the magic we are using for visualisation, if visualisation is enabled below,
+      //       be sure to avoid having unassigned signals (which you might be using for random inputs)
+      //       other than those specifically expected in the labs. You'll get strange errors for these.
+
+
+   
+   // Assert these to end simulation (before Makerchip cycle limit).
+   //*passed = *cyc_cnt > 40;
+   *failed = 1'b0;
+   
+   // Macro instantiations for:
+   //  o instruction memory
+   //  o register file
+   //  o data memory
+   //  o CPU visualization
+   |cpu
+      m4+imem(@1)    // Args: (read stage)
+      m4+rf(@2, @3)  // Args: (read stage, write stage) - if equal, no register bypass is required
+      m4+dmem(@4)    // Args: (read/write stage)
+
+
+   m4+cpu_viz(@4)    // For visualisation, argument should be at least equal to the last stage of CPU logic. @4 would work for all labs.
+\SV
+   endmodule
+OUTPUT : 
+  
+
+VERIFY LINK : 
+https://myth.makerchip.com/v140/ide/~0L9fPhGx/p-0LghPO
+
+
+
+
+
+
+Jumps :
+  
+
+Jumps are instructions that change the normal sequence of program execution by moving the Program Counter (PC) to a new address. In RISC-V, JAL (Jump and Link) performs an unconditional jump to a target address calculated using the current PC and an immediate value. JALR (Jump and Link Register) jumps to an address calculated by adding a source register value (SRC1) and an immediate value. These instructions allow the processor to move directly to another part of the program without following the next sequential instruction.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Lab: Jumps : 
+  
+
+In this lab, support for JAL and JALR instructions is added to the pipelined processor. First, a signal is created to identify jump instructions, and invalid cycles are generated similar to branch instructions to prevent incorrect execution. Next, the target address for JALR is calculated as SRC1 + IMM. The processor then selects the correct Program Counter value for JAL and JALR instructions so that execution continues from the proper target location. Finally, the design is tested and saved to verify that jump instructions work correctly and redirect program execution as expected.
+
+
+
+
+
+
+
+
+
+
+
+
+PROGRAM CODE : 
+\m4_TLV_version 1d: tl-x.org
+\SV
+   // This code can be found in: https://github.com/stevehoover/RISC-V_MYTH_Workshop
+   
+   m4_include_lib(['https://raw.githubusercontent.com/BalaDhinesh/RISC-V_MYTH_Workshop/master/tlv_lib/risc-v_shell_lib.tlv'])
+
+
+\SV
+   m4_makerchip_module   // (Expanded in Nav-TLV pane.)
+\TLV
+
+
+   // /====================\
+   // | Sum 1 to 9 Program |
+   // \====================/
+   //
+   // Program for MYTH Workshop to test RV32I
+   // Add 1,2,3,...,9 (in that order).
+   //
+   // Regs:
+   //  r10 (a0): In: 0, Out: final sum
+   //  r12 (a2): 10
+   //  r13 (a3): 1..10
+   //  r14 (a4): Sum
+   // 
+   // External to function:
+   m4_asm(ADD, r10, r0, r0)             // Initialize r10 (a0) to 0.
+   // Function:
+   m4_asm(ADD, r14, r10, r0)            // Initialize sum register a4 with 0x0
+   m4_asm(ADDI, r12, r10, 1010)         // Store count of 10 in register a2.
+   m4_asm(ADD, r13, r10, r0)            // Initialize intermediate sum register a3 with 0
+   // Loop:
+   m4_asm(ADD, r14, r13, r14)           // Incremental addition
+   m4_asm(ADDI, r13, r13, 1)            // Increment intermediate register by 1
+   m4_asm(BLT, r13, r12, 1111111111000) // If a3 is less than a2, branch to label named <loop>
+   m4_asm(ADD, r10, r14, r0)            // Store final result to register a0 so that it can be read by main program
+   m4_asm(SW, r0, r10, 100)
+   m4_asm(LW, r15, r0, 100)
+
+
+   
+   // Optional:
+   // m4_asm(JAL, r7, 00000000000000000000) // Done. Jump to itself (infinite loop). (Up to 20-bit signed immediate plus implicit 0 bit (unlike JALR) provides byte address; last immediate bit should also be 0)
+   m4_define_hier(['M4_IMEM'], M4_NUM_INSTRS)
+   
+   |cpu
+      @0
+         $reset = *reset;
+         $inc_pc[31:0] = $pc[31:0] + 32'd4;
+         $pc[31:0] = >>1$reset ? 32'b0 :
+                     >>3$valid_taken_br ? >>3$br_tgt_pc :
+                     >>3$valid_load ? >>3$inc_pc :
+                     (>>3$valid_jump && >>3$is_jal)  ? >>3$br_tgt_pc :
+                     (>>3$valid_jump && >>3$is_jalr) ? >>3$jalr_tgt_pc :
+                     >>1$inc_pc[31:0];
+         $imem_rd_en = !$reset;
+         $imem_rd_addr[M4_IMEM_INDEX_CNT-1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
+      @1
+         $instr[31:0] = $imem_rd_data[31:0];
+         $is_i_instr = $instr[6:2] ==? 5'b0000x || 
+                       $instr[6:2] ==? 5'b001x0 || 
+                       $instr[6:2] ==? 5'b11001;
+         $is_r_instr = $instr[6:2] ==? 5'b01011 || 
+                       $instr[6:2] ==? 5'b011x0 || 
+                       $instr[6:2] ==? 5'b10100;
+         $is_s_instr = $instr[6:2] ==? 5'b0100x;
+         $is_b_instr = $instr[6:2] ==? 5'b11000;
+         $is_j_instr = $instr[6:2] ==? 5'b11011;
+         $is_u_instr = $instr[6:2] ==? 5'b0x101;
+         $imm[31:0] = $is_i_instr ? {{21{$instr[31]}}, $instr[30:20]} :
+                      $is_s_instr ? {{21{$instr[31]}}, $instr[30:25], $instr[11:7]} :
+                      $is_b_instr ? {{20{$instr[31]}}, $instr[7], $instr[30:25], $instr[11:8], 1'b0} :
+                      $is_u_instr ? {$instr[31:12], 12'b0} :
+                      $is_j_instr ? {{12{$instr[31]}}, $instr[19:12], $instr[20], $instr[30:21], 1'b0} :
+                                    32'b0;
+         
+         $funct7_valid = $is_r_instr;
+         ?$funct7_valid
+            $funct7[6:0] = $instr[31:25];
+         $funct3_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         ?$funct3_valid
+            $funct3[2:0] = $instr[14:12];
+         $rs1_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs1_valid
+            $rs1[4:0] = $instr[19:15];
+         $rs2_valid = $is_r_instr || $is_s_instr || $is_b_instr;
+         
+         ?$rs2_valid
+            $rs2[4:0] = $instr[24:20];
+         $rd_valid = $is_r_instr || $is_i_instr || $is_u_instr || $is_j_instr;
+         ?$rd_valid
+            $rd[4:0] = $instr[11:7];
+         $opcode_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr || $is_u_instr || $is_j_instr;
+         ?$opcode_valid
+            $opcode[6:0] = $instr[6:0];
+            
+         $dec_bits[10:0] = {$funct7[5], $funct3, $opcode};
+         $is_beq   = $dec_bits ==? 11'bx_000_1100011;
+         $is_bne   = $dec_bits ==? 11'bx_001_1100011;
+         $is_blt   = $dec_bits ==? 11'bx_100_1100011;
+         $is_bge   = $dec_bits ==? 11'bx_101_1100011;
+         $is_bltu  = $dec_bits ==? 11'bx_110_1100011;
+         $is_bgeu  = $dec_bits ==? 11'bx_111_1100011;
+         $is_lui   = $dec_bits ==? 11'bx_xxx_0110111;
+         $is_auipc = $dec_bits ==? 11'bx_xxx_0010111;
+         $is_jal   = $dec_bits ==? 11'bx_xxx_1101111;
+         $is_jalr  = $dec_bits ==? 11'bx_000_1100111;
+         $is_load  = $dec_bits ==? 11'bx_xxx_0000011;
+         $is_sb    = $dec_bits ==? 11'bx_000_0100011;
+         $is_sh    = $dec_bits ==? 11'bx_001_0100011;
+         $is_sw    = $dec_bits ==? 11'bx_010_0100011;
+         $is_addi  = $dec_bits ==? 11'bx_000_0010011;
+         $is_slti  = $dec_bits ==? 11'bx_010_0010011;
+         $is_sltiu = $dec_bits ==? 11'bx_011_0010011;
+         $is_xori  = $dec_bits ==? 11'bx_100_0010011;
+         $is_ori   = $dec_bits ==? 11'bx_110_0010011;
+         $is_andi  = $dec_bits ==? 11'bx_111_0010011;
+         $is_slli  = $dec_bits ==? 11'b0_001_0010011;
+         $is_srli  = $dec_bits ==? 11'b0_101_0010011;
+         $is_srai  = $dec_bits ==? 11'b1_101_0010011;
+         $is_add   = $dec_bits ==? 11'b0_000_0110011;
+         $is_sub   = $dec_bits ==? 11'b1_000_0110011;
+         $is_sll   = $dec_bits ==? 11'b0_001_0110011;
+         $is_slt   = $dec_bits ==? 11'b0_010_0110011;
+         $is_sltu  = $dec_bits ==? 11'b0_011_0110011;
+         $is_xor   = $dec_bits ==? 11'b0_100_0110011;
+         $is_srl   = $dec_bits ==? 11'b0_101_0110011;
+         $is_sra   = $dec_bits ==? 11'b1_101_0110011;
+         $is_or    = $dec_bits ==? 11'b0_110_0110011;
+         $is_and   = $dec_bits ==? 11'b0_111_0110011;
+         
+      @2
+         
+         $br_tgt_pc[31:0] = $pc[31:0] + $imm[31:0];
+         $jalr_tgt_pc[31:0] = $src1_value[31:0] + $imm[31:0];
+         $src1_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs1)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs1)) ? >>2$result[31:0] :
+                             $rf_rd_data1[31:0];
+         
+         $src2_value[31:0] = (>>1$rf_wr_en && (>>1$rd == $rs2)) ? >>1$result[31:0] :
+                             (>>2$rf_wr_en && (>>2$rd == $rs2)) ? >>2$result[31:0] :
+                             $rf_rd_data2[31:0];
+         $rf_rd_en1 = $rs1_valid;
+         $rf_rd_index1[4:0] = $rs1[4:0];
+         $rf_rd_en2 = $rs2_valid;
+         $rf_rd_index2[4:0] = $rs2[4:0];
+      @3
+         $taken_br = $is_beq ? ($src1_value == $src2_value) :
+                     $is_bne ? ($src1_value != $src2_value) :
+                     $is_blt ? (($src1_value < $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bge ? (($src1_value >= $src2_value) ^ ($src1_value[31] != $src2_value[31])) :
+                     $is_bltu ? ($src1_value < $src2_value) :
+                     $is_bgeu ? ($src1_value >= $src2_value) :
+                     1'b0;
+         $valid_taken_br = $valid && $taken_br;
+         $valid_load = $valid && $is_load;
+         $is_jump = $is_jal || $is_jalr;
+         $valid_jump = $valid && $is_jump;
+         $valid = !(>>1$valid_taken_br || >>2$valid_taken_br || >>1$valid_load || >>2$valid_load || >>1$valid_jump || >>2$valid_jump);
+         $sltu_rslt = $src1_value < $src2_value;
+         $sltiu_rslt = $src1_value < $imm;
+         $result[31:0] = ($is_addi || $is_load || $is_s_instr) ? $src1_value + $imm :
+                         $is_andi  ? $src1_value & $imm :
+                         $is_ori   ? $src1_value | $imm :
+                         $is_xori  ? $src1_value ^ $imm :
+                         $is_addi  ? $src1_value + $imm :
+                         $is_slli  ? $src1_value << $imm[5:0] :
+                         $is_srli  ? $src1_value >> $imm[5:0] :
+                         $is_and   ? $src1_value & $src2_value :
+                         $is_or    ? $src1_value | $src2_value :
+                         $is_xor   ? $src1_value ^ $src2_value :
+                         $is_add   ? $src1_value + $src2_value :
+                         $is_sub   ? $src1_value - $src2_value :
+                         $is_sll   ? $src1_value << $src2_value[4:0] :
+                         $is_srl   ? $src1_value >> $src2_value[4:0] :
+                         $is_sltu  ? $sltu_rslt :
+                         $is_sltiu ? $sltiu_rslt :
+                         $is_lui   ? {$imm[31:12], 12'b0} :
+                         $is_auipc ? $pc + $imm :
+                         $is_jal   ? $pc + 32'd4 :
+                         $is_jalr  ? $pc + 32'd4 :
+                         $is_slt   ? ( ($src1_value[31] == $src2_value[31]) ? $sltu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_slti  ? ( ($src1_value[31] == $imm[31]) ? $sltiu_rslt : {31'b0, $src1_value[31]} ) :
+                         $is_sra   ? ( {{32{$src1_value[31]}}, $src1_value} >> $src2_value[4:0] ) :
+                         $is_srai  ? ( {{32{$src1_value[31]}}, $src1_value} >> $imm[4:0] ) :
+                         32'bx;
+         $rf_wr_en = ($valid && $rd_valid && ($rd != 5'b0) || >>2$valid_load);
+         $rf_wr_index[4:0] = $valid ? $rd[4:0] : >>2$rd[4:0];
+         $rf_wr_data[31:0] = $valid ? $result[31:0] : >>2$ld_data[31:0];
+      
+      @4
+         $dmem_rd_en = $valid_load;
+         $dmem_wr_en = $valid && $is_s_instr;
+         $dmem_addr[3:0] = $result[5:2];
+         $dmem_wr_data[31:0] = $src2_value[31:0];
+         
+      @5
+         $ld_data[31:0] = $dmem_rd_data[31:0];
+         *passed = |cpu/xreg[15]>>5$value == (1+2+3+4+5+6+7+8+9);
+         
+      // Note: Because of the magic we are using for visualisation, if visualisation is enabled below,
+      //       be sure to avoid having unassigned signals (which you might be using for random inputs)
+      //       other than those specifically expected in the labs. You'll get strange errors for these.
+
+
+   
+   // Assert these to end simulation (before Makerchip cycle limit).
+   //*passed = *cyc_cnt > 40;
+   *failed = 1'b0;
+   
+   // Macro instantiations for:
+   //  o instruction memory
+   //  o register file
+   //  o data memory
+   //  o CPU visualization
+   |cpu
+      m4+imem(@1)    // Args: (read stage)
+      m4+rf(@2, @3)  // Args: (read stage, write stage) - if equal, no register bypass is required
+      m4+dmem(@4)    // Args: (read/write stage)
+
+
+   m4+cpu_viz(@4)    // For visualisation, argument should be at least equal to the last stage of CPU logic. @4 would work for all labs.
+\SV
+   endmodule
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+OUTPUT : 
+  
+
+
+
+VERIFY LINK : 
+https://myth.makerchip.com/v140/ide/~0L9fPhGx/p-0Mjh5L
