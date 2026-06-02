@@ -1,0 +1,4 @@
+# INTRODUCTION TO RISC-V INSTRUCTION SET ARCHITECTURE:
+RISC-V is an open-source instruction set architecture used to design modern processors. In this project, the complete flow of RISC-V processor development is studied from software level to hardware implementation. The process begins with generating RISC-V instructions from a program, followed by implementing the processor architecture using hardware design techniques. The designed processor is then converted into logic circuits and finally transformed into a physical chip layout for fabrication. This project helps in understanding the overall flow of processor design, including architecture, implementation, and physical realization of a RISC-V based CPU.
+
+<img width="1212" height="543" alt="Screenshot 2026-05-29 113357" src="https://github.com/user-attachments/assets/92a0673c-de6c-438b-8abc-2ed92850f2c7" />
